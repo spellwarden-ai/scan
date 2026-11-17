@@ -35,6 +35,8 @@ jobs:
         run: python3 .github/scripts/test_upload_precedence.py
       - name: The log checker of the key legs finds a key in every form it could take
         run: python3 .github/scripts/test_log_for_key.py
+      - name: The analyzer's inputs, the way of its key and the command with analyze off
+        run: python3 .github/scripts/test_analyze_inputs.py
 
   fixtures:
     name: ${{ matrix.case }} on ${{ matrix.os }}
@@ -43,8 +45,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # The analyze cases here are the input checks (a missing SPELLWARDEN_MODEL_KEY among them) and analyze off, which
+        # need no scanner with the analyzer; the job `analyze` runs the analyzer itself.
         case: [clean, findings, baselined, stale-lock, broken-config, path-with-spaces, hostile-names, bad-input,
-               bad-requirements, exec-bit, subdir, probe, "probe@config-key", a2a]
+               bad-requirements, exec-bit, subdir, probe, "probe@config-key", a2a, analyze, "analyze@bad-value",
+               "analyze@no-endpoint", "analyze@no-model", "analyze@http", "analyze@space", "analyze@off"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -66,6 +71,9 @@ jobs:
           locked: ${{ steps.case.outputs.locked }}
           probe: ${{ steps.case.outputs.probe }}
           probe-private: ${{ steps.case.outputs.probe-private }}
+          analyze: ${{ steps.case.outputs.analyze }}
+          model-endpoint: ${{ steps.case.outputs.model-endpoint }}
+          model: ${{ steps.case.outputs.model }}
           comment: ${{ steps.case.outputs.comment }}
           sarif-upload: ${{ steps.case.outputs.sarif-upload }}
           telemetry: ${{ steps.case.outputs.telemetry }}
@@ -549,6 +557,178 @@ jobs:
               fi
               echo "attempt $attempt: the log of connected ($leg), job $id, is not available yet: $(head -c 400 "$RUNNER_TEMP/log-$leg.err" | tr '\n' ' ')"
               if [ "$attempt" = 6 ]; then echo "the log of connected ($leg) was not available after 6 tries"; exit 1; fi
+              sleep 10
+            done
+            SW_KEY="$key" python3 -I .github/scripts/check_log_for_key.py "$RUNNER_TEMP/log-$leg.txt"
+          done
+
+  analyze:
+    # The model-assisted analyzer (scanner 1.17.0) through the Action. The unreachable legs pass a key, built here at run time,
+    # in the env of the step that uses the Action, as the README tells users to, and name an https endpoint on the loopback
+    # address that refuses the connection: the scanner runs --analyze, reports the skill as not analysed, and the result stays
+    # the scan's (exit code 0). Nothing here masks the key: only the Action does, and the job `analyze-log` reads the logs of
+    # these legs. They need a pinned scanner with --analyze, so they are skipped, with a notice, while requirements.txt pins
+    # one before 1.17.0 (the release script moves the pin). The fork leg plays a pull request from a fork, through BASH_ENV
+    # as the connected job does, with no key: the scan runs without the analyzer and the notice analyzer_no_key says so.
+    name: analyze (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: unreachable-linux, os: ubuntu-latest, case: "analyze@unreachable", key: "true", fork: "false"}
+          - {name: unreachable-windows, os: windows-latest, case: "analyze@unreachable", key: "true", fork: "false"}
+          - {name: fork-no-key, os: ubuntu-latest, case: analyze, key: "false", fork: "true"}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Does the pinned scanner have the analyzer (1.17.0 or later)?
+        id: pin
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+
+          with open("requirements.txt", encoding="utf-8") as handle:
+              found = re.search(r"^spellwarden==(\d+)\.(\d+)\.(\d+)\b", handle.read(), re.MULTILINE)
+          ready = found is not None and tuple(int(part) for part in found.groups()) >= (1, 17, 0)
+          if not ready:
+              print("::notice::analyze skipped: requirements.txt pins a scanner before 1.17.0, which has no --analyze; "
+                    "the leg runs once the release script moves the pin.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"ready={'true' if ready else 'false'}\n")
+          PY
+      - name: Build the fixture repository
+        id: case
+        shell: bash
+        env:
+          CASE: ${{ matrix.case }}
+        run: python fixtures/make_repo.py "$CASE" "$RUNNER_TEMP/fx" --github-output
+      - name: Build the key this leg passes
+        id: key
+        shell: bash
+        env:
+          WITH_KEY: ${{ matrix.key }}
+        run: |
+          value=""
+          if [ "$WITH_KEY" = "true" ]; then value="fixture-model-key-$(head -c 24 /dev/zero | tr '\0' k)"; fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+      - name: Write the run context of a pull request from a fork
+        if: matrix.fork == 'true'
+        shell: bash
+        run: |
+          head="$(git -C "$RUNNER_TEMP/fx" rev-parse HEAD)"
+          python - "$RUNNER_TEMP" "$head" <<'PY'
+          import json
+          import sys
+
+          temp, head = sys.argv[1], sys.argv[2]
+          payload = {"number": 7, "repository": {"default_branch": "main"},
+                     "pull_request": {"number": 7, "head": {"sha": head, "ref": "feature/x", "repo": {"full_name": "forker/tools"}},
+                                      "base": {"sha": "b" * 40, "ref": "main", "repo": {"full_name": "acme/tools"}}}}
+          with open(temp + "/event.json", "w", encoding="utf-8") as handle:
+              json.dump(payload, handle)
+          PY
+          {
+            echo "export GITHUB_EVENT_NAME=pull_request"
+            echo "export GITHUB_EVENT_PATH=$RUNNER_TEMP/event.json"
+            echo "export GITHUB_SHA=$head"
+            echo "export GITHUB_HEAD_REF=feature/x"
+            echo "export GITHUB_REF_NAME=7/merge"
+            echo "export GITHUB_REF_PROTECTED=false"
+          } > "$RUNNER_TEMP/context.env"
+      - name: Run the Action
+        id: scan
+        if: matrix.key != 'true' || steps.pin.outputs.ready == 'true'
+        continue-on-error: true
+        uses: ./
+        env:
+          BASH_ENV: ${{ matrix.fork == 'true' && format('{0}/context.env', runner.temp) || '' }}
+          SPELLWARDEN_MODEL_KEY: ${{ steps.key.outputs.value }}
+        with:
+          path: ${{ steps.case.outputs.path }}
+          analyze: ${{ steps.case.outputs.analyze }}
+          model-endpoint: ${{ steps.case.outputs.model-endpoint }}
+          model: ${{ steps.case.outputs.model }}
+          comment: "false"
+          sarif-upload: "false"
+          telemetry: "false"
+      - name: Check the case
+        if: always() && (matrix.key != 'true' || steps.pin.outputs.ready == 'true')
+        shell: bash
+        env:
+          BASH_ENV: ${{ matrix.fork == 'true' && format('{0}/context.env', runner.temp) || '' }}
+          CASE: ${{ matrix.case }}
+          SW_OUT_EXIT: ${{ steps.scan.outputs.exit-code }}
+          SW_OUT_FINDINGS: ${{ steps.scan.outputs.findings }}
+          SW_OUT_SARIF: ${{ steps.scan.outputs.sarif-file }}
+          SW_OUT_OUTCOME: ${{ steps.scan.outcome }}
+          SW_ANNOTATIONS_FILE: ${{ runner.temp }}/spellwarden-annotations.txt
+          # check.py applies on_fork_request on a pull request from a fork: the context file sets the event for the fork leg.
+          SW_FORK: ${{ matrix.fork == 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
+        run: python fixtures/check.py "$CASE" "$RUNNER_TEMP/spellwarden.json" "$SW_OUT_EXIT" env
+      - name: The key is in no report, annotation or output
+        if: always() && matrix.key == 'true' && steps.pin.outputs.ready == 'true'
+        shell: bash
+        env:
+          SW_KEY: ${{ steps.key.outputs.value }}
+          SW_OUT_EXIT: ${{ steps.scan.outputs.exit-code }}
+          SW_OUT_FINDINGS: ${{ steps.scan.outputs.findings }}
+          SW_OUT_SARIF: ${{ steps.scan.outputs.sarif-file }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          temp, key = Path(os.environ["RUNNER_TEMP"]), os.environ["SW_KEY"]
+          places = [temp / name for name in ("spellwarden.json", "spellwarden.md", "spellwarden.sarif", "spellwarden-annotations.txt")]
+          leaked = [place.name for place in places if place.is_file() and key in place.read_text(encoding="utf-8", errors="replace")]
+          leaked += [name for name in ("SW_OUT_EXIT", "SW_OUT_FINDINGS", "SW_OUT_SARIF") if key in os.environ[name]]
+          if leaked:
+              print(f"FAIL the key is in {leaked}")
+              sys.exit(1)
+          print("analyze-key-ok")
+          PY
+
+  analyze-log:
+    # The analyzer's key never shows in the log of the Action. The `analyze` job does not mask the key it passes, so only the
+    # Action's own `::add-mask::` can hide it; this job downloads the logs of the two unreachable legs and fails if the key
+    # (rebuilt here, as the legs built it) shows anywhere but in the env the runner prints before the Action runs (see
+    # check_log_for_key.py). A leg skipped for its pin holds no key, and passes.
+    name: analyze, the key is not in the log
+    needs: analyze
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Download the logs of the unreachable legs and look for the key
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          key="fixture-model-key-$(head -c 24 /dev/zero | tr '\0' k)"
+          jobs="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --jq '.jobs[] | [.id, .name] | @tsv')"
+          for leg in unreachable-linux unreachable-windows; do
+            id="$(printf '%s\n' "$jobs" | awk -F '\t' -v name="analyze ($leg)" '$2 == name { print $1 }')"
+            test -n "$id"
+            # the log of a job that just finished can be missing or empty for a short while: bounded retries, then fail
+            for attempt in 1 2 3 4 5 6; do
+              if gh api --allow-escape-sequences "repos/$GH_REPO/actions/jobs/$id/logs" > "$RUNNER_TEMP/log-$leg.txt" 2> "$RUNNER_TEMP/log-$leg.err" && test -s "$RUNNER_TEMP/log-$leg.txt"; then
+                break
+              fi
+              echo "attempt $attempt: the log of analyze ($leg), job $id, is not available yet: $(head -c 400 "$RUNNER_TEMP/log-$leg.err" | tr '\n' ' ')"
+              if [ "$attempt" = 6 ]; then echo "the log of analyze ($leg) was not available after 6 tries"; exit 1; fi
               sleep 10
             done
             SW_KEY="$key" python3 -I .github/scripts/check_log_for_key.py "$RUNNER_TEMP/log-$leg.txt"
