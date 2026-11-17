@@ -44,6 +44,9 @@ In the default mode no secret is needed. The check result is always the scan's o
 | `locked` | `auto` | `auto` checks the lock file when `.spellwarden/lock.json` exists, `true` requires it, `false` skips it. |
 | `probe` | `false` | `true` probes each remote MCP server in the configuration from the runner (see "Probing"). |
 | `probe-private` | `false` | `true` lets the probe reach the configured servers' own private addresses (never a link-local address, and never one a server's answer or redirect points to), honoured only on a push, schedule or manual run of a protected branch or tag. |
+| `analyze` | `false` | `true` also sends each skill's `SKILL.md` and scripts to the model endpoint you name, for an advisory review that never changes the check's result (see "Model-assisted analyzer"). The key comes from the environment variable `SPELLWARDEN_MODEL_KEY`, never from an input. |
+| `model-endpoint` | empty | With `analyze: true`, the `https://` address of your OpenAI-compatible endpoint. |
+| `model` | empty | With `analyze: true`, the model name your endpoint expects. |
 | `comment` | `true` | Keep one comment with the report on the pull request. |
 | `sarif-upload` | `true` | Upload the SARIF file to code scanning. |
 | `telemetry` | `true` | `false` switches off the usage ping (see "Usage ping"). |
@@ -54,9 +57,9 @@ In the default mode no secret is needed. The check result is always the scan's o
 | `default-branch` | empty | The default branch, for scheduled runs whose event payload does not name it. |
 | `requirements-file` | empty | A test hook for the scanner's own release tests. Leave it empty. |
 
-An input the Action does not accept (for example `fail-on: severe`, an `org` that is not a slug, or an `api-key` that is not a CI key) stops the job with an error that names the input, and exit code `2`. The error never shows the value of `api-key`.
+An input the Action does not accept (for example `fail-on: severe`, an `org` that is not a slug, an `api-key` that is not a CI key, or `analyze: true` with a `model-endpoint` that is not `https://`) stops the job with an error that names the input, and exit code `2`. The error never shows the value of `api-key` or of `SPELLWARDEN_MODEL_KEY`.
 
-The inputs `org`, `api-key`, `upload` and `default-branch` need `v1.2.0` or later and change nothing while `org` and `api-key` are empty.
+The inputs `org`, `api-key`, `upload` and `default-branch` need `v1.2.0` or later and change nothing while `org` and `api-key` are empty. The inputs `analyze`, `model-endpoint` and `model` need `v1.17.0` or later and change nothing while `analyze` is `false`: the scan command is then the same as without them.
 
 ## Outputs
 
@@ -96,7 +99,7 @@ The default `actions/checkout` (depth 1, `persist-credentials: true`) works: the
 
 ## Network access
 
-On the network, the Action contacts the Python package index (PyPI) to install the scanner and dash.spellwarden.ai for the usage ping while telemetry is on, and, in connected mode, your code host's token endpoint and the Spellwarden API at dash.spellwarden.ai (or the proxy you configure). With `probe: true` it also contacts the remote MCP servers of the configuration, the remote A2A agents named in `a2a.agents` and the key sets that signed agent cards name.
+On the network, the Action contacts the Python package index (PyPI) to install the scanner and dash.spellwarden.ai for the usage ping while telemetry is on, and, in connected mode, your code host's token endpoint and the Spellwarden API at dash.spellwarden.ai (or the proxy you configure). With `probe: true` it also contacts the remote MCP servers of the configuration, the remote A2A agents named in `a2a.agents` and the key sets that signed agent cards name. With `analyze: true` it also contacts the endpoint named in `model-endpoint`, and nothing else for the analyzer.
 
 ## Usage ping
 
@@ -114,13 +117,34 @@ With `probe: true`, the scanner sends the unauthenticated MCP handshake to each 
 
 Private addresses (`10.0.0.0/8` and the like) are refused unless `probe-private: true` is set. Even then it applies only on a push, schedule or manual run (`workflow_dispatch`) of a protected branch or tag: on a pull request, or after a comment or another workflow's run, whoever wrote the change controls the endpoints in it. It then allows only the private addresses of the configured servers themselves, never a link-local address such as the cloud metadata service, and never an address that a server's answer or redirect points to. On a pull request from a fork, probing is switched off altogether.
 
+## Model-assisted analyzer
+
+Off by default. With `analyze: true` (`v1.17.0` or later), the scanner also sends each skill's `SKILL.md` and scripts to an OpenAI-compatible endpoint you name, with your key, for an advisory review in eight categories, such as instruction override, data exfiltration and credential access.
+
+```yaml
+      - uses: spellwarden-ai/scan@<sha>  # v1.17.0
+        env:
+          SPELLWARDEN_MODEL_KEY: ${{ secrets.MODEL_KEY }}   # any secret name; the variable name is fixed
+        with:
+          analyze: true
+          model-endpoint: https://llm.example.com/v1
+          model: <the model name your endpoint expects>
+```
+
+- **What is sent where.** From the runner to the endpoint you name, and nowhere else: each skill's `SKILL.md` and scripts, with credentials masked, at most 120,000 bytes per skill, and your key as `Authorization: Bearer`. Nothing goes to Spellwarden.
+- **The key.** It comes only from the environment variable `SPELLWARDEN_MODEL_KEY`, set from a secret on the step that uses the Action. There is deliberately no input for it, so it cannot be written into a workflow file or shown among the inputs the runner prints. The Action masks it in the log before anything else runs, and only the validation step and the scan step see it: every other step of the Action, the comment and the code scanning upload among them, runs with it empty. The scanner passes it to your endpoint only, and it is never written to the log, the summary, the comment, a report, the SARIF file or an output.
+- **Advisory, always.** The verdicts appear in the job summary, the comment, the JSON report and as code scanning results of level `note`. They never change the exit code, the `findings` output or the check's result. A skill the analyzer could not read or judge is reported as not analysed, never as clean.
+- **What the Action checks.** With `analyze: true`, `model-endpoint` and `model` must be set, without spaces or line breaks, and `model-endpoint` must start with `https://`. The scanner itself also accepts plain `http` for a loopback address, but a runner has no model of its own to call, so the Action does not. `SPELLWARDEN_MODEL_KEY` must be set. Each of these stops the job with an error and exit code `2`, except a missing key on a pull request from a fork or from Dependabot, which gets no secrets: there the scan runs without the analyzer, with the notice `analyzer_no_key`, and the check result is the scan's. Under the `pull_request_target` recipe in "Connected mode" the key is available, and the analyzer then sends the skills of the pull request's author to your endpoint.
+
+How it works, the eight categories and the measured rates: [the model-assisted analyzer guide](https://spellwarden.ai/docs/model-assisted-analyzer?utm_source=scanner&utm_medium=cli&utm_campaign=analyzer).
+
 ## A2A agent cards
 
 The Action checks A2A agent cards like any other agent content: every `.well-known/agent-card.json` in the repository, and the cards listed in `a2a.cards` of `.spellwarden/config.yml`. A signed card is verified against the key file named in `a2a.keys`; on a pull request `a2a.keys` and `a2a.agents` come from the base commit. With `probe: true` the scanner also fetches the cards of the remote agents `a2a.agents` lists, and findings on a remote agent's card do not fail a pull request. The full description is the scanner's README, section [Checking A2A agent cards](https://github.com/spellwarden-ai/spellwarden#checking-a2a-agent-cards).
 
 ## Pull requests from forks and Dependabot
 
-GitHub gives these runs a read-only token. The scan, the summary and the check result work as usual. The comment and the code scanning upload are skipped with a notice.
+GitHub gives these runs a read-only token. The scan, the summary and the check result work as usual. The comment and the code scanning upload are skipped with a notice. These runs get no secrets either, so with `analyze: true` the scan runs without the model-assisted analyzer, with the notice `analyzer_no_key` (see "Model-assisted analyzer").
 
 **Outside the recipe in "Connected mode", never run this Action under `pull_request_target` with the pull request's code checked out.** That event runs with a write token and your secrets, and the scanner would read files written by the author of the pull request. The recipe is safe because its job checks out the code without credentials, runs nothing but this Action, and grants only the permissions it lists.
 

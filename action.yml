@@ -26,6 +26,18 @@ inputs:
     description: "true lets the probe reach the configured servers' own private addresses, never a link-local one. Honoured only on a push, schedule or manual run of a protected branch or tag."
     required: false
     default: "false"
+  analyze:
+    description: "true also sends each skill's SKILL.md and scripts to the model endpoint you name, for an advisory review that never changes the check's result. The key comes only from the environment variable SPELLWARDEN_MODEL_KEY, never from an input."
+    required: false
+    default: "false"
+  model-endpoint:
+    description: "With analyze: true, the https:// address of your OpenAI-compatible endpoint."
+    required: false
+    default: ""
+  model:
+    description: "With analyze: true, the model name your endpoint expects."
+    required: false
+    default: ""
   comment:
     description: "true keeps one comment with the report on the pull request (needs pull-requests: write)."
     required: false
@@ -96,9 +108,22 @@ runs:
         SW_ORG: ${{ inputs.org }}
         SW_CONNECTED_UPLOAD: ${{ inputs.upload }}
         SPELLWARDEN_API_KEY: ${{ inputs.api-key }}
+        SW_ANALYZE: ${{ inputs.analyze }}
+        SW_MODEL_ENDPOINT: ${{ inputs.model-endpoint }}
+        SW_MODEL: ${{ inputs.model }}
+        # SPELLWARDEN_MODEL_KEY, the analyzer's key, comes from the env of the step that uses the Action: no input takes it.
       run: |
-        # The key is masked before anything else runs, and no message below carries it.
+        # The keys are masked before anything else runs, and no message below carries them.
         if [ -n "$SPELLWARDEN_API_KEY" ]; then printf '::add-mask::%s\n' "$SPELLWARDEN_API_KEY"; fi
+        # The analyzer's key is masked line by line: a value with a line break would otherwise print its later lines as
+        # plain log text. Such a value is refused below.
+        model_key="${SPELLWARDEN_MODEL_KEY:-}"
+        rest="${model_key//$'\r'/$'\n'}"
+        while [ -n "$rest" ]; do
+          line="${rest%%$'\n'*}"
+          if [ "$line" = "$rest" ]; then rest=""; else rest="${rest#*$'\n'}"; fi
+          if [ -n "$line" ]; then printf '::add-mask::%s\n' "$line"; fi
+        done
         {
           echo "SW_EXIT=2"
           echo "SW_FINDINGS=0"
@@ -110,6 +135,7 @@ runs:
           echo "SW_UPLOAD="
           echo "SW_CONNECTED=false"
           echo "SW_DASHBOARD_URL="
+          echo "SW_ANALYZE_RUN="
         } >> "$GITHUB_ENV"
         bad=""
         message=""
@@ -124,7 +150,8 @@ runs:
           esac
         fi
         for pair in "probe=$SW_PROBE" "probe-private=$SW_PROBE_PRIVATE" "comment=$SW_COMMENT" \
-                    "sarif-upload=$SW_SARIF_UPLOAD" "telemetry=$SW_TELEMETRY" "upload=$SW_CONNECTED_UPLOAD"; do
+                    "sarif-upload=$SW_SARIF_UPLOAD" "telemetry=$SW_TELEMETRY" "upload=$SW_CONNECTED_UPLOAD" \
+                    "analyze=$SW_ANALYZE"; do
           if [ -n "$bad" ]; then break; fi
           case "${pair#*=}" in
             true|false) ;;
@@ -142,20 +169,46 @@ runs:
         if [ -z "$bad" ] && [ -n "$SPELLWARDEN_API_KEY" ] && ! [[ $SPELLWARDEN_API_KEY =~ $key_pattern ]]; then
           bad="api-key (expected a CI key, which starts with swk_; the value is not shown)"
         fi
+        # The analyzer's inputs are read only with analyze: true. The endpoint must be https: the scanner also accepts
+        # plain http for a loopback address, but a CI runner has no model of its own to call.
+        space_pattern='[[:space:]]'
+        endpoint_pattern='^https://[^[:space:]]+$'
+        if [ -z "$bad" ] && [ "$SW_ANALYZE" = "true" ]; then
+          if [ -n "$SW_MODEL_ENDPOINT" ] && ! [[ $SW_MODEL_ENDPOINT =~ $endpoint_pattern ]]; then
+            bad="model-endpoint (expected the https:// address of your endpoint, without spaces or line breaks)"
+          elif [ -n "$SW_MODEL" ] && [[ $SW_MODEL =~ $space_pattern ]]; then
+            bad="model (expected the model name your endpoint expects, without spaces or line breaks)"
+          fi
+        fi
         if [ -n "$bad" ]; then
           message="The input $bad has a value the Action does not accept."
         elif [ -n "$SW_ORG" ] && [ -n "$SPELLWARDEN_API_KEY" ]; then
           message="The inputs org and api-key are both set. Use org with a CI connection, or api-key alone, not both."
+        elif [ "$SW_ANALYZE" = "true" ] && [ -z "$SW_MODEL_ENDPOINT" ]; then
+          message="The input analyze is true, but model-endpoint is empty. Set it to the https:// address of your OpenAI-compatible endpoint."
+        elif [ "$SW_ANALYZE" = "true" ] && [ -z "$SW_MODEL" ]; then
+          message="The input analyze is true, but model is empty. Set it to the model name your endpoint expects."
+        elif [ "$SW_ANALYZE" = "true" ] && [[ $model_key == *[$'\r\n']* ]]; then
+          message="The environment variable SPELLWARDEN_MODEL_KEY holds a line break, which the Action does not accept. The value is not shown."
         fi
         if [ -n "$message" ]; then
           echo "::error title=Spellwarden::$message"
           exit 0
+        fi
+        # A missing key is decided after the install, where the event can be read: a pull request from a fork or from
+        # Dependabot gets no secrets, and there the scan runs without the analyzer, with a notice (as the SARIF upload does).
+        if [ "$SW_ANALYZE" = "true" ]; then
+          if [ -n "$model_key" ]; then echo "SW_ANALYZE_RUN=true" >> "$GITHUB_ENV"; else echo "SW_ANALYZE_RUN=no-key" >> "$GITHUB_ENV"; fi
         fi
         echo "SW_VALID=true" >> "$GITHUB_ENV"
 
     - name: Find Python 3.11 or newer
       if: env.SW_VALID == 'true'
       shell: bash
+      env:
+        # The analyzer's key, from the env of the step that uses the Action, reaches the Validate and Scan steps only:
+        # every other step sets it empty.
+        SPELLWARDEN_MODEL_KEY: ""
       run: |
         check='import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'
         where='import sys; print(sys.executable)'
@@ -182,6 +235,7 @@ runs:
       shell: bash
       env:
         SW_REQUIREMENTS_FILE: ${{ inputs.requirements-file }}
+        SPELLWARDEN_MODEL_KEY: ""
       run: |
         # Every Python here runs in isolated mode (-I): the working directory is the scanned checkout, and a
         # json.py, pip/ or spellwarden_cli/ there would otherwise be imported first.
@@ -216,6 +270,44 @@ runs:
           echo "SW_READY=true"
         } >> "$GITHUB_ENV"
 
+    - name: Decide whether the analyzer can run
+      if: env.SW_READY == 'true' && env.SW_ANALYZE_RUN == 'no-key'
+      shell: bash
+      env:
+        SPELLWARDEN_MODEL_KEY: ""
+      run: |
+        "$SW_PY" -I - <<'PY'
+        import json
+        import os
+
+        # The test of the SARIF step: GitHub gives a pull request from a fork, and one from Dependabot, no secrets.
+        restricted = os.environ.get("GITHUB_ACTOR", "") == "dependabot[bot]"
+        if os.environ.get("GITHUB_EVENT_NAME", "") in ("pull_request", "pull_request_target"):
+            try:
+                with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as handle:
+                    head = json.load(handle)["pull_request"]["head"]["repo"]["full_name"]
+                restricted = restricted or head != os.environ.get("GITHUB_REPOSITORY")
+            except (OSError, KeyError, TypeError, ValueError):
+                restricted = True
+        state = {"SW_ANALYZE_RUN": ""}
+        if restricted:
+            print("::notice title=Spellwarden::analyzer_no_key: the model-assisted analyzer did not run, because a fork or "
+                  "Dependabot pull request gets no secrets and SPELLWARDEN_MODEL_KEY is not set. The scan ran without it; "
+                  "the check result is the scan's.")
+            with open(os.path.join(os.environ["RUNNER_TEMP"], "spellwarden-annotations.txt"), "a", encoding="utf-8") as log:
+                log.write("analyzer_no_key\n")  # for the Action's own tests (spec 7.4)
+        else:
+            # "$" and "{{" apart: the runner would read the two together in this file as an expression.
+            secret = "$" + "{{ secrets.<NAME> }}"
+            print("::error title=Spellwarden::The input analyze is true, but SPELLWARDEN_MODEL_KEY is not set. Pass the "
+                  f"key from a secret on the step that uses the Action: env: SPELLWARDEN_MODEL_KEY: {secret}. No input "
+                  "takes the key, so it never appears in a workflow file or among the inputs.")
+            state["SW_READY"] = ""  # no scan: the result is exit code 2, as for an input the Action does not accept
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+            for key, value in state.items():
+                handle.write(f"{key}={value}\n")
+        PY
+
     - name: Scan
       if: env.SW_READY == 'true'
       shell: bash
@@ -233,6 +325,11 @@ runs:
         SW_API_KEY: ${{ inputs.api-key }}
         SW_CONNECTED_UPLOAD: ${{ inputs.upload }}
         SW_DEFAULT_BRANCH: ${{ inputs.default-branch || github.event.repository.default_branch }}
+        # The model-assisted analyzer (scanner 1.17.0). Its key is not set here: SPELLWARDEN_MODEL_KEY comes from the env of
+        # the step that uses the Action, and the scanner takes it out of its environment before anything else runs.
+        SW_ANALYZE: ${{ inputs.analyze }}
+        SW_MODEL_ENDPOINT: ${{ inputs.model-endpoint }}
+        SW_MODEL: ${{ inputs.model }}
       run: |
         out="$RUNNER_TEMP/spellwarden"
         rm -f "$out.sarif" "$out.md" "$out.json"
@@ -243,6 +340,11 @@ runs:
         if [ "$SW_PROBE" = "true" ]; then args+=(--probe); else args+=(--no-probe); fi
         if [ "$SW_PROBE_PRIVATE" = "true" ]; then args+=(--probe-private); else args+=(--no-probe-private); fi
         if [ "$SW_TELEMETRY" = "false" ]; then args+=(--no-telemetry); fi
+        # Only with analyze: true and a key (SW_ANALYZE_RUN, set by the steps above); otherwise the command is as before.
+        # The key is never an argument.
+        if [ "$SW_ANALYZE" = "true" ] && [ "${SW_ANALYZE_RUN:-}" = "true" ]; then
+          args+=(--analyze --model-endpoint "$SW_MODEL_ENDPOINT" --model "$SW_MODEL")
+        fi
         # The scanner ranks SPELLWARDEN_UPLOAD above `connected.upload` of the settings file. So only `upload: false` is
         # passed on; the default "true" is no override, and the file (or a SPELLWARDEN_UPLOAD the job sets) decides.
         if [ "$SW_CONNECTED_UPLOAD" = "false" ]; then export SPELLWARDEN_UPLOAD=false; fi
@@ -305,12 +407,16 @@ runs:
     - name: Job summary
       if: env.SW_READY == 'true'
       shell: bash
+      env:
+        SPELLWARDEN_MODEL_KEY: ""
       run: |
         if [ -f "$RUNNER_TEMP/spellwarden.md" ]; then cat "$RUNNER_TEMP/spellwarden.md" >> "$GITHUB_STEP_SUMMARY"; fi
 
     - name: Decide whether the SARIF upload can work
       if: env.SW_READY == 'true' && env.SW_SARIF != '' && inputs.sarif-upload == 'true'
       shell: bash
+      env:
+        SPELLWARDEN_MODEL_KEY: ""
       run: |
         "$SW_PY" -I - <<'PY'
         import json
@@ -338,6 +444,8 @@ runs:
       if: env.SW_UPLOAD == 'true'
       continue-on-error: true
       uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+      env:
+        SPELLWARDEN_MODEL_KEY: ""
       with:
         sarif_file: ${{ env.SW_SARIF }}
         category: spellwarden
@@ -346,6 +454,8 @@ runs:
     - name: Report a failed SARIF upload
       if: steps.upload.outcome == 'failure'
       shell: bash
+      env:
+        SPELLWARDEN_MODEL_KEY: ""
       run: |
         echo "sarif_upload_failed" >> "$RUNNER_TEMP/spellwarden-annotations.txt"  # for the Action's own tests (spec 7.4)
         echo "::warning title=Spellwarden::sarif_upload_failed: the SARIF file was not uploaded to code scanning. Usual causes: the workflow does not grant security-events: write, the repository is private without GitHub Code Security, or the upload service failed. See the log of the upload step. The check result is the scan's."
@@ -355,6 +465,7 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.token }}
+        SPELLWARDEN_MODEL_KEY: ""
       run: |
         if [ -f "$RUNNER_TEMP/spellwarden.md" ]; then
           log="$RUNNER_TEMP/spellwarden-comment.log"
@@ -378,6 +489,8 @@ runs:
       id: result
       if: always()
       shell: bash
+      env:
+        SPELLWARDEN_MODEL_KEY: ""
       run: |
         exit_code="${SW_EXIT:-2}"
         findings="${SW_FINDINGS:-0}"

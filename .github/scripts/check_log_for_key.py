@@ -1,9 +1,11 @@
-"""Fails when a job log shows a CI key (finding r0:F2; spec 10, invariant 2: the Action never prints the key). The key the
+"""Fails when a job log shows a CI key or the analyzer's key (finding r0:F2; spec 10, invariant 2: the Action never prints the key). The key the
 `connected` job passes is a plain test value that nothing masks but the Action itself (`::add-mask::` in its Validate step),
 so a log that shows it means the Action did not mask it or printed it. The runner prints the evaluated inputs of a step
 before the step runs, hence before any mask of the Action can apply: the `api-key:` line of the `with:` block of the Action's
 own step and the first `SPELLWARDEN_API_KEY:` line (the env of the Validate step, which registers the mask) are the only
-places the key may appear; every other line that shows it is reported. The key comes from the environment (SW_KEY), not from
+places the key may appear. The analyzer's key (the `analyze` job) comes from the env of the step that uses the Action, which the
+runner prints in that step's header and again in the Validate step's, both before the mask: up to two `SPELLWARDEN_MODEL_KEY:`
+lines are allowed. Every other line that shows the key is reported. The key comes from the environment (SW_KEY), not from
 the command line. Usage: SW_KEY=... python3 -I .github/scripts/check_log_for_key.py LOGFILE...
 Exits 1 listing every leak. Standard library only."""
 from __future__ import annotations
@@ -12,13 +14,16 @@ import os
 import re
 import sys
 
-HEADER_BEFORE_MASK = (re.compile(r"^(\S+\s+)?\s*api-key: (?P<value>.*)$"), re.compile(r"^(\S+\s+)?\s*SPELLWARDEN_API_KEY: (?P<value>.*)$"))
+HEADER_BEFORE_MASK = (re.compile(r"^(\S+\s+)?\s*api-key: (?P<value>.*)$"), re.compile(r"^(\S+\s+)?\s*SPELLWARDEN_API_KEY: (?P<value>.*)$"),
+                      re.compile(r"^(\S+\s+)?\s*SPELLWARDEN_MODEL_KEY: (?P<value>.*)$"))
+ALLOWED = (1, 1, 2)  # the lines of each pattern the runner may print before the Action's mask is registered
 
 
 def leaks(log: str, key: str) -> list[str]:
-    """The lines of `log` that show `key`, other than the one allowed `api-key:` line and the one allowed
-    `SPELLWARDEN_API_KEY:` line (the step headers the runner prints before the Action's mask is registered)."""
-    allowed = [1, 1]
+    """The lines of `log` that show `key`, other than the one allowed `api-key:` line, the one allowed
+    `SPELLWARDEN_API_KEY:` line and the two allowed `SPELLWARDEN_MODEL_KEY:` lines (the step headers the runner prints
+    before the Action's mask is registered)."""
+    allowed = list(ALLOWED)
     found: list[str] = []
     for number, line in enumerate(log.splitlines(), start=1):
         if key not in line:
