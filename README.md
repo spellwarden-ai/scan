@@ -41,6 +41,7 @@ In the default mode no secret is needed. The check result is always the scan's o
 |---|---|---|
 | `path` | `.` | The directory to scan. Paths in the lock, the baseline and the report are relative to it. |
 | `fail-on` | `high` | The lowest severity that fails the check: `critical`, `high`, `medium`, `low` or `never`. |
+| `preset` | empty | `strict`, `balanced` or `low-noise` hands the scanner that preset, which changes the severity of named rules or leaves them out of the reports (see "Presets"). Empty passes none, and the scanner's own settings decide. |
 | `locked` | `auto` | `auto` checks the lock file when `.spellwarden/lock.json` exists, `true` requires it, `false` skips it. |
 | `probe` | `false` | `true` probes each remote MCP server in the configuration from the runner (see "Probing"). |
 | `probe-private` | `false` | `true` lets the probe reach the configured servers' own private addresses (never a link-local address, and never one a server's answer or redirect points to), honoured only on a push, schedule or manual run of a protected branch or tag. |
@@ -57,9 +58,9 @@ In the default mode no secret is needed. The check result is always the scan's o
 | `default-branch` | empty | The default branch, for scheduled runs whose event payload does not name it. |
 | `requirements-file` | empty | A test hook for the scanner's own release tests. Leave it empty. |
 
-An input the Action does not accept (for example `fail-on: severe`, an `org` that is not a slug, an `api-key` that is not a CI key, or `analyze: true` with a `model-endpoint` that is not `https://`) stops the job with an error that names the input, and exit code `2`. The error never shows the value of `api-key` or of `SPELLWARDEN_MODEL_KEY`.
+An input the Action does not accept (for example `fail-on: severe`, `preset: medium`, an `org` that is not a slug, an `api-key` that is not a CI key, or `analyze: true` with a `model-endpoint` that is not `https://`) stops the job with an error that names the input, and exit code `2`. The error never shows the value of `api-key` or of `SPELLWARDEN_MODEL_KEY`.
 
-The inputs `org`, `api-key`, `upload` and `default-branch` need `v1.2.0` or later and change nothing while `org` and `api-key` are empty. The inputs `analyze`, `model-endpoint` and `model` need `v1.17.0` or later and change nothing while `analyze` is `false`: the scan command is then the same as without them.
+The inputs `org`, `api-key`, `upload` and `default-branch` need `v1.2.0` or later and change nothing while `org` and `api-key` are empty. The inputs `analyze`, `model-endpoint` and `model` need `v1.17.0` or later and change nothing while `analyze` is `false`: the scan command is then the same as without them. The input `preset` needs `v1.18.0` or later and changes nothing while it is empty: the scan command is then the same as without it.
 
 ## Outputs
 
@@ -116,6 +117,23 @@ To switch it off, set the input `telemetry: false`, or `DO_NOT_TRACK=1` or `SPEL
 With `probe: true`, the scanner sends the unauthenticated MCP handshake to each remote server in the configuration, from the runner, and reports its transport, authentication mode, protocol version and readiness for the 2026-07-28 protocol. It sends no header, token, environment value or argument from your configuration, only the protocol's own requests to the configured URL. It follows the hosted product's rules: HTTPS only, at most 9 requests per server, 50 servers and 300 requests per run, 120 seconds in all.
 
 Private addresses (`10.0.0.0/8` and the like) are refused unless `probe-private: true` is set. Even then it applies only on a push, schedule or manual run (`workflow_dispatch`) of a protected branch or tag: on a pull request, or after a comment or another workflow's run, whoever wrote the change controls the endpoints in it. It then allows only the private addresses of the configured servers themselves, never a link-local address such as the cloud metadata service, and never an address that a server's answer or redirect points to. On a pull request from a fork, probing is switched off altogether.
+
+## Presets
+
+With `preset` (`v1.18.0` or later) the Action passes `--preset` to the scanner, which then changes the severity of named rules, or leaves a rule's findings out of the reports:
+
+```yaml
+      - uses: spellwarden-ai/scan@<sha>  # v1.18.0
+        with:
+          preset: strict
+```
+
+- **`strict`** raises the medium rules that describe a direct risk (credentials, code execution, exfiltration paths, authentication) to high, so they fail the check at the default `fail-on: high`, and the low metadata rules to medium.
+- **`balanced`** is each rule's own severity, the same as no preset.
+- **`low-noise`** turns off the rules about metadata, format or protocol age that fire on most benign content, and lowers to low the medium rules whose pattern is common in benign skills and configurations. It never lowers a critical or high finding.
+- **Empty**, the default, passes no flag: the scanner's own settings decide, that is `SPELLWARDEN_PRESET` in the job, else `preset` in `.spellwarden/config.yml` (on a pull request, the file of the base commit).
+
+The preset changes what the job reports and its result: the exit code, the `findings` output, the comment, the job summary and the SARIF file. In connected mode the upload keeps each rule's own severity, so your organisation sees every finding as the rule rates it. Every report says which preset applied, and a finding it moved says from which severity. Which rule each preset changes, and why: [the presets guide](https://spellwarden.ai/docs/presets?utm_source=scanner&utm_medium=cli&utm_campaign=presets).
 
 ## Model-assisted analyzer
 
