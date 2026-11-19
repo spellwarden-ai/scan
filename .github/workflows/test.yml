@@ -37,6 +37,8 @@ jobs:
         run: python3 .github/scripts/test_log_for_key.py
       - name: The analyzer's inputs, the way of its key and the command with analyze off
         run: python3 .github/scripts/test_analyze_inputs.py
+      - name: The preset input, its check and the command with each value
+        run: python3 .github/scripts/test_preset_input.py
 
   fixtures:
     name: ${{ matrix.case }} on ${{ matrix.os }}
@@ -46,10 +48,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         # The analyze cases here are the input checks (a missing SPELLWARDEN_MODEL_KEY among them) and analyze off, which
-        # need no scanner with the analyzer; the job `analyze` runs the analyzer itself.
+        # need no scanner with the analyzer; the job `analyze` runs the analyzer itself. Likewise the preset cases here are
+        # the empty preset and the input check; the job `preset` runs the three presets.
         case: [clean, findings, baselined, stale-lock, broken-config, path-with-spaces, hostile-names, bad-input,
                bad-requirements, exec-bit, subdir, probe, "probe@config-key", a2a, analyze, "analyze@bad-value",
-               "analyze@no-endpoint", "analyze@no-model", "analyze@http", "analyze@space", "analyze@off"]
+               "analyze@no-endpoint", "analyze@no-model", "analyze@http", "analyze@space", "analyze@off", preset,
+               "preset@bad-value"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -68,6 +72,7 @@ jobs:
         with:
           path: ${{ steps.case.outputs.path }}
           fail-on: ${{ steps.case.outputs.fail-on }}
+          preset: ${{ steps.case.outputs.preset }}
           locked: ${{ steps.case.outputs.locked }}
           probe: ${{ steps.case.outputs.probe }}
           probe-private: ${{ steps.case.outputs.probe-private }}
@@ -733,3 +738,68 @@ jobs:
             done
             SW_KEY="$key" python3 -I .github/scripts/check_log_for_key.py "$RUNNER_TEMP/log-$leg.txt"
           done
+
+  preset:
+    # The scanner's presets (1.18.0) through the Action, on Linux and Windows: each value reaches the scanner as --preset, and
+    # the report's preset block, its exit code and its findings are the preset's (strict raises both findings of the case and
+    # fails at high, low-noise lowers one and leaves the other out, balanced reports as no preset). They need a pinned scanner
+    # with --preset, so they are skipped, with a notice, while requirements.txt pins one before 1.18.0 (the release script
+    # moves the pin). The empty preset and a value the Action refuses run in the job `fixtures`.
+    name: ${{ matrix.case }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        case: ["preset@strict", "preset@balanced", "preset@low-noise"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Does the pinned scanner have presets (1.18.0 or later)?
+        id: pin
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+
+          with open("requirements.txt", encoding="utf-8") as handle:
+              found = re.search(r"^spellwarden==(\d+)\.(\d+)\.(\d+)\b", handle.read(), re.MULTILINE)
+          ready = found is not None and tuple(int(part) for part in found.groups()) >= (1, 18, 0)
+          if not ready:
+              print("::notice::preset skipped: requirements.txt pins a scanner before 1.18.0, which has no --preset; "
+                    "the leg runs once the release script moves the pin.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"ready={'true' if ready else 'false'}\n")
+          PY
+      - name: Build the fixture repository
+        id: case
+        if: steps.pin.outputs.ready == 'true'
+        shell: bash
+        env:
+          CASE: ${{ matrix.case }}
+        run: python fixtures/make_repo.py "$CASE" "$RUNNER_TEMP/fx" --github-output
+      - name: Run the Action
+        id: scan
+        if: steps.pin.outputs.ready == 'true'
+        continue-on-error: true
+        uses: ./
+        with:
+          path: ${{ steps.case.outputs.path }}
+          fail-on: ${{ steps.case.outputs.fail-on }}
+          preset: ${{ steps.case.outputs.preset }}
+          comment: "false"
+          sarif-upload: "false"
+          telemetry: "false"
+      - name: Check the case
+        if: always() && steps.pin.outputs.ready == 'true'
+        shell: bash
+        env:
+          CASE: ${{ matrix.case }}
+          SW_OUT_EXIT: ${{ steps.scan.outputs.exit-code }}
+          SW_OUT_FINDINGS: ${{ steps.scan.outputs.findings }}
+          SW_OUT_SARIF: ${{ steps.scan.outputs.sarif-file }}
+          SW_OUT_OUTCOME: ${{ steps.scan.outcome }}
+        run: python fixtures/check.py "$CASE" "$RUNNER_TEMP/spellwarden.json" "$SW_OUT_EXIT" env

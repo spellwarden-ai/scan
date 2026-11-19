@@ -14,6 +14,10 @@ inputs:
     description: "The lowest severity that fails the check: critical, high, medium, low or never."
     required: false
     default: high
+  preset:
+    description: "strict, balanced or low-noise; empty uses the scanner's settings"
+    required: false
+    default: ""
   locked:
     description: "auto checks the lock when .spellwarden/lock.json exists; true requires it; false skips it."
     required: false
@@ -99,6 +103,7 @@ runs:
       shell: bash
       env:
         SW_FAIL_ON: ${{ inputs.fail-on }}
+        SW_PRESET: ${{ inputs.preset }}
         SW_LOCKED: ${{ inputs.locked }}
         SW_PROBE: ${{ inputs.probe }}
         SW_PROBE_PRIVATE: ${{ inputs.probe-private }}
@@ -147,6 +152,13 @@ runs:
           case "$SW_LOCKED" in
             auto|true|false) ;;
             *) bad="locked (expected auto, true or false)" ;;
+          esac
+        fi
+        # The scanner's presets (1.18.0). Empty passes no flag, so the scanner's own settings decide.
+        if [ -z "$bad" ]; then
+          case "$SW_PRESET" in
+            ''|strict|balanced|low-noise) ;;
+            *) bad="preset (expected strict, balanced, low-noise or empty)" ;;
           esac
         fi
         for pair in "probe=$SW_PROBE" "probe-private=$SW_PROBE_PRIVATE" "comment=$SW_COMMENT" \
@@ -318,6 +330,8 @@ runs:
         SW_PROBE: ${{ inputs.probe }}
         SW_PROBE_PRIVATE: ${{ inputs.probe-private }}
         SW_TELEMETRY: ${{ inputs.telemetry }}
+        # The scanner's preset (1.18.0), checked by the Validate step: empty, strict, balanced or low-noise.
+        SW_PRESET: ${{ inputs.preset }}
         # Connected mode (O3 spec 10): the scanner reads SPELLWARDEN_ORG, SPELLWARDEN_API_KEY and SPELLWARDEN_DEFAULT_BRANCH
         # itself and performs the OIDC request itself. The inputs are exported below only when set, so an empty input
         # leaves a value the job set at its level alone (the engine README's `env: SPELLWARDEN_API_KEY` form keeps working).
@@ -345,6 +359,8 @@ runs:
         if [ "$SW_ANALYZE" = "true" ] && [ "${SW_ANALYZE_RUN:-}" = "true" ]; then
           args+=(--analyze --model-endpoint "$SW_MODEL_ENDPOINT" --model "$SW_MODEL")
         fi
+        # Only when the input is set; empty passes no flag, so the scanner's own settings decide and the command is as before.
+        if [ -n "${SW_PRESET:-}" ]; then args+=(--preset "$SW_PRESET"); fi
         # The scanner ranks SPELLWARDEN_UPLOAD above `connected.upload` of the settings file. So only `upload: false` is
         # passed on; the default "true" is no override, and the file (or a SPELLWARDEN_UPLOAD the job sets) decides.
         if [ "$SW_CONNECTED_UPLOAD" = "false" ]; then export SPELLWARDEN_UPLOAD=false; fi
