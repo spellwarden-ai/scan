@@ -43,6 +43,7 @@ In the default mode no secret is needed. The check result is always the scan's o
 | `fail-on` | `high` | The lowest severity that fails the check: `critical`, `high`, `medium`, `low` or `never`. |
 | `preset` | empty | `strict`, `balanced` or `low-noise` hands the scanner that preset, which changes the severity of named rules or leaves them out of the reports (see "Presets"). Empty passes none, and the scanner's own settings decide. |
 | `locked` | `auto` | `auto` checks the lock file when `.spellwarden/lock.json` exists, `true` requires it, `false` skips it. |
+| `follow-links` | `false` | `true` follows a linked directory in an instruction folder, such as `.claude/rules/shared`, and judges the rule files behind it (see "Linked directories in instruction folders"). With `false` such a link is the notice `symlink_skipped`, and those files are not judged. |
 | `probe` | `false` | `true` probes each remote MCP server in the configuration from the runner (see "Probing"). |
 | `probe-private` | `false` | `true` lets the probe reach the configured servers' own private addresses (never a link-local address, and never one a server's answer or redirect points to), honoured only on a push, schedule or manual run of a protected branch or tag. |
 | `analyze` | `false` | `true` also sends each skill's `SKILL.md` and scripts to the model endpoint you name, for an advisory review that never changes the check's result (see "Model-assisted analyzer"). The key comes from the environment variable `SPELLWARDEN_MODEL_KEY`, never from an input. |
@@ -58,9 +59,9 @@ In the default mode no secret is needed. The check result is always the scan's o
 | `default-branch` | empty | The default branch, for scheduled runs whose event payload does not name it. |
 | `requirements-file` | empty | A test hook for the scanner's own release tests. Leave it empty. |
 
-An input the Action does not accept (for example `fail-on: severe`, `preset: medium`, an `org` that is not a slug, an `api-key` that is not a CI key, or `analyze: true` with a `model-endpoint` that is not `https://`) stops the job with an error that names the input, and exit code `2`. The error never shows the value of `api-key` or of `SPELLWARDEN_MODEL_KEY`.
+An input the Action does not accept (for example `fail-on: severe`, `preset: medium`, `follow-links: yes`, an `org` that is not a slug, an `api-key` that is not a CI key, or `analyze: true` with a `model-endpoint` that is not `https://`) stops the job with an error that names the input, and exit code `2`. The error never shows the value of `api-key` or of `SPELLWARDEN_MODEL_KEY`.
 
-The inputs `org`, `api-key`, `upload` and `default-branch` need `v1.2.0` or later and change nothing while `org` and `api-key` are empty. The inputs `analyze`, `model-endpoint` and `model` need `v1.17.0` or later and change nothing while `analyze` is `false`: the scan command is then the same as without them. The input `preset` needs `v1.18.0` or later and changes nothing while it is empty: the scan command is then the same as without it.
+The inputs `org`, `api-key`, `upload` and `default-branch` need `v1.2.0` or later and change nothing while `org` and `api-key` are empty. The inputs `analyze`, `model-endpoint` and `model` need `v1.17.0` or later and change nothing while `analyze` is `false`: the scan command is then the same as without them. The input `preset` needs `v1.18.0` or later and changes nothing while it is empty: the scan command is then the same as without it. The input `follow-links` needs `v1.20.0` or later and changes nothing while it is `false`: the scan command is then the same as without it.
 
 ## Outputs
 
@@ -134,6 +135,25 @@ With `preset` (`v1.18.0` or later) the Action passes `--preset` to the scanner, 
 - **Empty**, the default, passes no flag: the scanner's own settings decide, that is `SPELLWARDEN_PRESET` in the job, else `preset` in `.spellwarden/config.yml` (on a pull request, the file of the base commit).
 
 The preset changes what the job reports and its result: the exit code, the `findings` output, the comment, the job summary and the SARIF file. In connected mode the upload keeps each rule's own severity, so your organisation sees every finding as the rule rates it. Every report says which preset applied, and a finding it moved says from which severity. Which rule each preset changes, and why: [the presets guide](https://spellwarden.ai/docs/presets?utm_source=scanner&utm_medium=cli&utm_campaign=presets).
+
+## Linked directories in instruction folders
+
+The scanner also judges the files that give instructions to a coding agent, such as the rule files in `.claude/rules/`, `.cursor/rules/` or `.github/instructions/`. Some repositories keep shared rules in one directory and link it into such a folder, for example `.claude/rules/shared -> ../../shared-rules`. By default the scanner does not follow that link: it is the notice `symlink_skipped` in the report, the rule files reached only through it are not judged, and the check can pass with them unread.
+
+With `follow-links: true` (`v1.20.0` or later) the Action passes `--follow-links` to the scanner, which then follows the link and judges those files:
+
+```yaml
+      - uses: spellwarden-ai/scan@<sha>  # v1.20.0
+        with:
+          follow-links: true
+```
+
+- A finding in such a file is reported at the link's path (`.claude/rules/shared/deploy.md`), the path an agent reads the file by.
+- The scanner follows a link whose target is a directory inside the scanned directory, one level deep, and at most 50 links in one scan. A link it cannot follow (an absolute target, a target that is itself a link, a missing one) is then the error `unsafe_path`, and more than 50 links are the error `instructions_limit`. Either makes the scan incomplete (exit code `2`): replace the link with the files it should hold, or leave it out with `exclude` in `.spellwarden/config.yml`.
+- A link whose target is outside the scanned directory is never followed, with the input or without it: it is a notice, and what it leads to is not judged. A linked directory anywhere else than in an instruction folder is not followed either, and the files in it are judged where they really are.
+- `false`, the default, passes no flag: the scan command is the same as without the input.
+
+The lock file does not record the argument. A job with `locked` on (`true`, or `auto` with a lock file in the repository) and `follow-links: true` needs a lock written with `spellwarden lock --follow-links`. With a lock written without it, the files behind the link show as added and the lock is out of date (exit code `3`). Which links count and what is never followed: [Instruction files](https://github.com/spellwarden-ai/spellwarden#instruction-files) in the scanner's README.
 
 ## Model-assisted analyzer
 
