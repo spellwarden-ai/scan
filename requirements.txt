@@ -1,6 +1,6 @@
-# Written by spellwarden-ai/spellwarden scripts/release-wrappers.py for 1.20.0. Do not edit by hand.
-spellwarden==1.20.0 \
-    --hash=sha256:d56ec2a67039ec1e22d20d86f61d12ce35f9a485fff04d9e2be120f2f14a9e91
+# Written by spellwarden-ai/spellwarden scripts/release-wrappers.py for 1.21.0. Do not edit by hand.
+spellwarden==1.21.0 \
+    --hash=sha256:0ee3d8a008c0b143abd09e94ff3c27b2eea19f038ab13c36890a1110c6eaa525
 cffi==2.1.1 ; platform_python_implementation != 'PyPy' \
     --hash=sha256:046bfc24911b37851ee1b51aab8bffe713d89c68c6a057b09484ce9fd5f69b4e \
     --hash=sha256:06c72bb76605a4b0cd0aad6930b69d4baf7dd5d806cfc409b824191099700e66 \
