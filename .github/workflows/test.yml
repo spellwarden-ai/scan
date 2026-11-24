@@ -551,7 +551,15 @@ jobs:
         run: |
           set -euo pipefail
           prefix=sw
-          jobs="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --jq '.jobs[] | [.id, .name] | @tsv')"
+          # GitHub's job list can answer a 5xx for a run with many jobs and attempts: bounded retries with small pages, then fail
+          jobs=""
+          for try in 1 2 3 4 5 6; do
+            if jobs="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=30" --jq '.jobs[] | [.id, .name] | @tsv')" && [ -n "$jobs" ]; then
+              break
+            fi
+            if [ "$try" = 6 ]; then echo "the job list of this run was not available after 6 tries"; exit 1; fi
+            sleep 10
+          done
           for leg in api-key api-key-malformed; do
             case "$leg" in
               api-key) key="${prefix}k_$(head -c 40 /dev/zero | tr '\0' a)" ;;
@@ -728,7 +736,15 @@ jobs:
         run: |
           set -euo pipefail
           key="fixture-model-key-$(head -c 24 /dev/zero | tr '\0' k)"
-          jobs="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --jq '.jobs[] | [.id, .name] | @tsv')"
+          # GitHub's job list can answer a 5xx for a run with many jobs and attempts: bounded retries with small pages, then fail
+          jobs=""
+          for try in 1 2 3 4 5 6; do
+            if jobs="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=30" --jq '.jobs[] | [.id, .name] | @tsv')" && [ -n "$jobs" ]; then
+              break
+            fi
+            if [ "$try" = 6 ]; then echo "the job list of this run was not available after 6 tries"; exit 1; fi
+            sleep 10
+          done
           for leg in unreachable-linux unreachable-windows; do
             id="$(printf '%s\n' "$jobs" | awk -F '\t' -v name="analyze ($leg)" '$2 == name { print $1 }')"
             test -n "$id"
