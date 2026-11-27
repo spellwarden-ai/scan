@@ -58,6 +58,10 @@ inputs:
     description: "false switches off the pseudonymous usage ping described in the README."
     required: false
     default: "true"
+  invite:
+    description: "false to leave the dashboard line and the badge offer out of the job summary and the comment; true by default"
+    required: false
+    default: "true"
   token:
     description: The token used for the pull request comment and the SARIF upload.
     required: false
@@ -115,6 +119,7 @@ runs:
         SW_COMMENT: ${{ inputs.comment }}
         SW_SARIF_UPLOAD: ${{ inputs.sarif-upload }}
         SW_TELEMETRY: ${{ inputs.telemetry }}
+        SW_INVITE: ${{ inputs.invite }}
         SW_ORG: ${{ inputs.org }}
         SW_CONNECTED_UPLOAD: ${{ inputs.upload }}
         SPELLWARDEN_API_KEY: ${{ inputs.api-key }}
@@ -166,10 +171,11 @@ runs:
             *) bad="preset (expected strict, balanced, low-noise or empty)" ;;
           esac
         fi
-        # follow-links is the scanner's --follow-links (1.20.0): true or false, as the other inputs of this loop.
+        # follow-links is the scanner's --follow-links (1.20.0) and invite its --no-invite (1.26.0): true or false, as the
+        # other inputs of this loop.
         for pair in "probe=$SW_PROBE" "probe-private=$SW_PROBE_PRIVATE" "comment=$SW_COMMENT" \
                     "sarif-upload=$SW_SARIF_UPLOAD" "telemetry=$SW_TELEMETRY" "upload=$SW_CONNECTED_UPLOAD" \
-                    "analyze=$SW_ANALYZE" "follow-links=$SW_FOLLOW_LINKS"; do
+                    "analyze=$SW_ANALYZE" "follow-links=$SW_FOLLOW_LINKS" "invite=$SW_INVITE"; do
           if [ -n "$bad" ]; then break; fi
           case "${pair#*=}" in
             true|false) ;;
@@ -336,6 +342,9 @@ runs:
         SW_PROBE: ${{ inputs.probe }}
         SW_PROBE_PRIVATE: ${{ inputs.probe-private }}
         SW_TELEMETRY: ${{ inputs.telemetry }}
+        # Whether the Markdown report keeps its dashboard line and badge offer (scanner 1.26.0), checked by the Validate step:
+        # true or false.
+        SW_INVITE: ${{ inputs.invite }}
         # The scanner's preset (1.18.0), checked by the Validate step: empty, strict, balanced or low-noise.
         SW_PRESET: ${{ inputs.preset }}
         # A linked directory in an instruction folder (scanner 1.20.0), checked by the Validate step: true or false.
@@ -362,6 +371,9 @@ runs:
         if [ "$SW_PROBE" = "true" ]; then args+=(--probe); else args+=(--no-probe); fi
         if [ "$SW_PROBE_PRIVATE" = "true" ]; then args+=(--probe-private); else args+=(--no-probe-private); fi
         if [ "$SW_TELEMETRY" = "false" ]; then args+=(--no-telemetry); fi
+        # Only with invite: false; true, the default, passes no flag, so the command is as before and the Markdown report
+        # keeps its dashboard line and badge offer.
+        if [ "${SW_INVITE:-}" = "false" ]; then args+=(--no-invite); fi
         # Only with follow-links: true; false, the default, passes no flag, so the command is as before and a linked directory
         # in an instruction folder is the notice symlink_skipped.
         if [ "${SW_FOLLOW_LINKS:-}" = "true" ]; then args+=(--follow-links); fi

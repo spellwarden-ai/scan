@@ -25,7 +25,8 @@ ENDPOINT = "https://llm.example.com/v1"
 MODEL = "fixture-model"
 BOOLEANS = {"SW_FAIL_ON": "high", "SW_LOCKED": "auto", "SW_PROBE": "false", "SW_PROBE_PRIVATE": "false",
             "SW_COMMENT": "true", "SW_SARIF_UPLOAD": "true", "SW_TELEMETRY": "true", "SW_ORG": "",
-            "SW_CONNECTED_UPLOAD": "true", "SPELLWARDEN_API_KEY": "", "SW_FOLLOW_LINKS": "false"}
+            "SW_CONNECTED_UPLOAD": "true", "SPELLWARDEN_API_KEY": "", "SW_FOLLOW_LINKS": "false",
+            "SW_INVITE": "true"}
 STUB = """#!/usr/bin/env bash
 # The scanner's Python, played: a log token for -c, the arguments of -m recorded, stdin read for -.
 if [ "$2" = "-c" ]; then echo 0123456789abcdef0123456789abcdef; exit 0; fi
