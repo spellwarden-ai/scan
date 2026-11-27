@@ -903,7 +903,9 @@ jobs:
     # the dashboard line is the one effect that is true in every event this workflow runs on. The leg needs a pinned scanner
     # with --no-invite, so it is skipped, with a notice, while requirements.txt pins one before 1.26.0 (the release script
     # moves the pin). A value the Action refuses runs in the job `fixtures`.
-    name: ${{ matrix.case }} on ${{ matrix.os }}
+    # Its legs carry their own prefix: the cases clean and clean@invite-off would otherwise create the check runs
+    # "clean on ubuntu-latest" and "clean on windows-latest", the names of the job `fixtures`, which the ruleset requires.
+    name: invite, ${{ matrix.case }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

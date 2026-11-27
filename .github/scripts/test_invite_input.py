@@ -126,6 +126,34 @@ def scan_problems(text: str, temp: Path, helpers) -> list[str]:
     return problems
 
 
+def check_names(workflow: str) -> list[str]:
+    """The names of the check runs the jobs of test.yml create, a matrix leg `${{ matrix.case }} on ${{ matrix.os }}` expanded.
+    The ruleset protect-main requires the contexts "clean on ubuntu-latest" and "clean on windows-latest", which are the job
+    `fixtures`; a second job that creates a check run with the same name could stand in for them (a skipped leg always
+    passes), so no name may belong to two jobs. The job `invite` runs the case clean too and so carries its own prefix."""
+    owners: dict[str, set[str]] = {}
+    for match in re.finditer(r"^  ([a-z][a-z0-9-]*):\n((?:(?:    .*)?\n)+)", workflow, re.MULTILINE):
+        job, body = match.group(1), match.group(2)
+        name = re.search(r"^    name: (.+)$", body, re.MULTILINE)
+        if not name:
+            continue
+        template = name.group(1).strip()
+        axes = {"os": ["ubuntu-latest", "windows-latest"], "case": [""]}
+        if "matrix.os" in template:
+            oses = re.search(r"^        os: \[([^\]]*)\]", body, re.MULTILINE)
+            axes["os"] = [v.strip() for v in oses.group(1).split(",")] if oses else axes["os"]
+        if "matrix.case" in template:
+            cases = re.search(r"^        case: \[([^\]]*)\]", body, re.MULTILINE)
+            text = re.sub(r"#.*", "", cases.group(1)) if cases else ""
+            axes["case"] = [v.strip().strip('"') for v in text.split(",") if v.strip()]
+        for os_name in axes["os"]:
+            for case in axes["case"]:
+                expanded = template.replace("${{ matrix.os }}", os_name).replace("${{ matrix.case }}", case)
+                owners.setdefault(expanded, set()).add(job)
+    return [f"the check name {name!r} belongs to the jobs {sorted(jobs)}; a required check must name one job"
+            for name, jobs in sorted(owners.items()) if len(jobs) > 1]
+
+
 def main(argv: list[str]) -> int:
     path = Path(argv[1]) if len(argv) > 1 else ROOT / "action.yml"
     text = path.read_text(encoding="utf-8")
@@ -135,6 +163,7 @@ def main(argv: list[str]) -> int:
         temp = Path(directory)
         problems = static_problems(text, readme, helpers) + validate_problems(text, temp, helpers)
         problems += scan_problems(text, temp, helpers)
+    problems += check_names((ROOT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8"))
     for problem in problems:
         print(f"FAIL {problem}")
     if not problems:
