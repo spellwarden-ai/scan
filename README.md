@@ -52,6 +52,7 @@ In the default mode no secret is needed. The check result is always the scan's o
 | `comment` | `true` | Keep one comment with the report on the pull request. |
 | `sarif-upload` | `true` | Upload the SARIF file to code scanning. |
 | `telemetry` | `true` | `false` switches off the usage ping (see "Usage ping"). |
+| `invite` | `true` | `false` leaves the dashboard line and the badge offer out of the job summary and the pull request comment; the rule links stay. Needs `v1.26.0` or later; see [links in the Markdown report](https://github.com/spellwarden-ai/spellwarden#links-in-the-markdown-report). |
 | `token` | `${{ github.token }}` | The token for the comment and the upload. |
 | `org` | empty | Your Spellwarden organisation slug. Turns on connected mode through a CI connection: the job needs `permissions: id-token: write` (see "Connected mode"). |
 | `api-key` | empty | A CI key (access CI) from Settings, API keys, for pipelines that cannot use a CI connection. Pass it from a secret. Use `org` or `api-key`, never both. |
@@ -59,9 +60,9 @@ In the default mode no secret is needed. The check result is always the scan's o
 | `default-branch` | empty | The default branch, for scheduled runs whose event payload does not name it. |
 | `requirements-file` | empty | A test hook for the scanner's own release tests. Leave it empty. |
 
-An input the Action does not accept (for example `fail-on: severe`, `preset: medium`, `follow-links: yes`, an `org` that is not a slug, an `api-key` that is not a CI key, or `analyze: true` with a `model-endpoint` that is not `https://`) stops the job with an error that names the input, and exit code `2`. The error never shows the value of `api-key` or of `SPELLWARDEN_MODEL_KEY`.
+An input the Action does not accept (for example `fail-on: severe`, `preset: medium`, `follow-links: yes`, `invite: maybe`, an `org` that is not a slug, an `api-key` that is not a CI key, or `analyze: true` with a `model-endpoint` that is not `https://`) stops the job with an error that names the input, and exit code `2`. The error never shows the value of `api-key` or of `SPELLWARDEN_MODEL_KEY`.
 
-The inputs `org`, `api-key`, `upload` and `default-branch` need `v1.2.0` or later and change nothing while `org` and `api-key` are empty. The inputs `analyze`, `model-endpoint` and `model` need `v1.17.0` or later and change nothing while `analyze` is `false`: the scan command is then the same as without them. The input `preset` needs `v1.18.0` or later and changes nothing while it is empty: the scan command is then the same as without it. The input `follow-links` needs `v1.20.0` or later and changes nothing while it is `false`: the scan command is then the same as without it.
+The inputs `org`, `api-key`, `upload` and `default-branch` need `v1.2.0` or later and change nothing while `org` and `api-key` are empty. The inputs `analyze`, `model-endpoint` and `model` need `v1.17.0` or later and change nothing while `analyze` is `false`: the scan command is then the same as without them. The input `preset` needs `v1.18.0` or later and changes nothing while it is empty: the scan command is then the same as without it. The input `follow-links` needs `v1.20.0` or later and changes nothing while it is `false`: the scan command is then the same as without it. The input `invite` needs `v1.26.0` or later and changes nothing while it is `true`: the scan command is then the same as without it.
 
 ## Outputs
 
